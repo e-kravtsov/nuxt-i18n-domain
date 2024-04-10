@@ -115,7 +115,7 @@ export async function loadAndSetLocale(
   let ret = false
   const oldLocale = getLocale(i18n)
   __DEBUG__ && console.log('setLocale: new -> ', newLocale, ' old -> ', oldLocale, ' initial -> ', initial)
-  if (!newLocale) {
+  if (!newLocale || oldLocale === newLocale) {
     return [ret, oldLocale]
   }
 
@@ -216,7 +216,7 @@ export function detectLocale(
 
   if (!finalLocale) {
     if (differentDomains) {
-      finalLocale = getLocaleDomain(normalizedLocales)
+      finalLocale = getLocaleDomain(normalizedLocales, strategy, route)
     } else if (strategy !== 'no_prefix') {
       finalLocale = routeLocaleGetter(route)
     } else {

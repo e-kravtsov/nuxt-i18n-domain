@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { isArray, isString } from '@intlify/shared'
+import { isArray, isString, isObject } from '@intlify/shared'
 import { hasProtocol } from 'ufo'
 import isHTTPS from 'is-https'
 import {
@@ -305,7 +305,7 @@ export function detectBrowserLanguage(
   return { locale: '', stat: false, reason: 'not_found_match' }
 }
 
-export function getHost() {
+export function getHost(nuxtApp: NuxtApp) {
   let host: string | undefined
   if (process.client) {
     host = window.location.host
@@ -313,7 +313,9 @@ export function getHost() {
     const header = useRequestHeaders(['x-forwarded-host', 'host'])
 
     let detectedHost: string | undefined
-    if ('x-forwarded-host' in header) {
+    if (nuxtApp?.ssrContext?.event?.context.storeHost) {
+      detectedHost = nuxtApp?.ssrContext?.event?.context.storeHost
+    } else if ('x-forwarded-host' in header) {
       detectedHost = header['x-forwarded-host']
     } else if ('host' in header) {
       detectedHost = header['host']
@@ -324,19 +326,72 @@ export function getHost() {
   return host
 }
 
-export function getLocaleDomain(locales: LocaleObject[]): string {
-  let host = getHost() || ''
+export function getLocaleDomain(
+  locales: LocaleObject[],
+  strategy: string,
+  route: string | Route | RouteLocationNormalized | RouteLocationNormalizedLoaded
+): string {
+  let host = getHost(useNuxtApp()) || ''
   if (host) {
-    const matchingLocale = locales.find(locale => {
+    __DEBUG__ &&
+      console.log(`MixedDomains: locating domain for host: `, host, strategy, isObject(route) ? route.path : route)
+    let matchingLocale: LocaleObject | undefined
+    const matchingLocales = locales.filter(locale => {
       if (locale && locale.domain) {
         let domain = locale.domain
         if (hasProtocol(locale.domain)) {
           domain = locale.domain.replace(/(http|https):\/\//, '')
         }
         return domain === host
+      } else if (Array.isArray(locale?.domains)) {
+        return locale.domains.includes(host)
       }
       return false
     })
+
+    if (matchingLocales.length === 1) {
+      matchingLocale = matchingLocales[0]
+      __DEBUG__ && console.log(`MixedDomains: found only one matching domain: `, host, matchingLocales[0].code)
+    } else if (matchingLocales.length > 1) {
+      if (strategy === 'no_prefix') {
+        console.warn(
+          formatMessage(
+            'Multiple matching domains found! This is not supported for no_prefix strategy in combination with differentDomains!'
+          )
+        )
+        // Just return the first matching domain locale
+        matchingLocale = matchingLocales[0]
+      } else {
+        // get prefix from route
+        if (route) {
+          const routePath = isObject(route) ? route.path : isString(route) ? route : ''
+
+          __DEBUG__ && console.log(`MixedDomains: Check in matched domain for locale match in path: `, routePath, host)
+
+          if (routePath && routePath !== '') {
+            const matches = routePath.match(getLocalesRegex(matchingLocales.map(l => l.code)))
+            if (matches && matches.length > 1) {
+              matchingLocale = matchingLocales.find(l => l.code === matches[1])
+              __DEBUG__ &&
+                console.log(`MixedDomains: Found matching locale from path. MatchingLocale is now`, matchingLocale)
+            }
+          }
+        }
+
+        if (!matchingLocale) {
+          // Fall back to default language on this domain - if set
+          matchingLocale = matchingLocales.find(l =>
+            Array.isArray(l.defaultForDomains) ? l.defaultForDomains.includes(host) : l.domainDefault
+          )
+          __DEBUG__ &&
+            console.log(
+              `MixedDomains: matching locale not found - trying to get default for this domain. MatchingLocale is now`,
+              matchingLocale
+            )
+        }
+      }
+    }
+
     if (matchingLocale) {
       return matchingLocale.code
     } else {
@@ -349,10 +404,14 @@ export function getLocaleDomain(locales: LocaleObject[]): string {
 export function getDomainFromLocale(localeCode: Locale): string | undefined {
   const runtimeConfig = useRuntimeConfig()
   const nuxtApp = useNuxtApp()
-  // lookup the `differentDomain` origin associated with given locale.
+  const host = getHost(nuxtApp)
   const config = runtimeConfig.public.i18n as { locales?: Record<Locale, { domain?: string }> }
   const lang = normalizedLocales.find(locale => locale.code === localeCode)
-  const domain = config?.locales?.[localeCode]?.domain ?? lang?.domain
+  const domain =
+    config?.locales?.[localeCode]?.domain ||
+    lang?.domain ||
+    config?.locales?.[localeCode]?.domains?.find(v => v === host) ||
+    lang?.domains?.find(v => v === host)
 
   if (domain) {
     if (hasProtocol(domain, { strict: true })) {
